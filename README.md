@@ -5,5 +5,6 @@ Use of these codes for research purposes is permittes as long as proper referenc
 The codes were writtend in MATLAB2023a, and incompatibilities with versions prior to MATLAB2020a could arise. 
 The authors take no responibilities for any misuse of the codes.
 
-Please, cite as:
-_Delle Monache, D., De Polis, A. and Petrella, I., 2023. Modeling and forecasting macroeconomic downside risk. Journal of Business & Economic Statistics, pp.1-27._
+Please, cite as:\
+_Delle Monache, D., De Polis, A., & Petrella, I. (2023). Modeling and forecasting macroeconomic downside risk_.\
+_Journal of Business & Economic Statistics, 1-27_.
