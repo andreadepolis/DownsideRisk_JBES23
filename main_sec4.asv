@@ -1,0 +1,784 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Replication codes for                                                   %
+%            De Polis, A., D. Delle Monache and I. Petrella 
+%            "Modeling and Forecasting Macroeconomic Downside Risk"                 %
+%            Journal of Business & Economic Statistics (2023).
+%
+% Matlab version: 2023a.
+% Use of code for research purposes is permitted as long as proper 
+% reference to source is given.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+clear
+close all
+clc
+
+%% Housekeeping
+rng(19021993)
+
+savepath = './Output/' ;
+if ~exist(savepath, 'dir') ; mkdir(savepath) ; end
+
+figpath = './Figures/' ;
+if ~exist(figpath, 'dir') ; mkdir(figpath) ; end
+
+opt = optimset('Display', 'off', 'LargeScale', 'off',...
+               'MaxFunEvals', 10e4, 'TolX', 1e-4, 'TolFun', 1e-4,...
+               'TolX', 1e-4, 'MaxIter', 10e4, 'useparallel', true) ;
+
+addpath ./auxFunctions/
+addpath ./data/
+
+%% Specifications
+% Two-component filter: 1 (true), 0 (false)
+% If c2 = 0, the time-varying trends are fixed and the model estimates
+% constant drifts instead.
+c2 = 1 ;
+
+% Model selection:
+% 1) Plain Skew-t model (skt).
+% 2) Skt with NFCI (t, t-1) as predictors.
+% 3) Skt with NFCI subcompnents as predictors; 
+%    leverage (t, t-1), non-financia leverage (t, t-1), credit (t, t-1), risk (t, t-1).
+% 4) Model 3) with the addition of Y (t-1) as predictor.
+% 5) Skt with Y (t-1) as predictor.
+mdl = 3 ;
+
+tic0 = tic ;
+
+disp(['--------- Model ' num2str(mdl) ' ---------'])
+
+%% Data and transformations    
+% Start: 1973Q2
+% End:   2020Q4 
+
+load data/GDP_NFCI_SUB21 
+
+q4_72 = find(t.Year == 1972 & t.Month == 10) ;
+
+y = y(q4_72 : end) ; 
+x = x(q4_72 + 1 : end, :) ; 
+t = t(q4_72 + 1 : end) ; 
+
+Y  = 4*(y(2 : end) - y(1 : end - 1)) ;
+x1 = x(1 : end, :) ;
+t  = t(2 : end) ;
+
+%% Inital values and parameters initialization
+Ys = Y(2 : end) ;
+
+init = 6*4 ;
+betaS  =    mean(Ys(1 : init)) ; 
+sig2S1 = log(std(Ys(1 : init)))/2 ; 
+rhoS1  = -atanh(skewness(Ys(1 : init)))/2 ;
+
+sv  = [betaS sig2S1 rhoS1] ; 
+svl = -inf(1, 3) ; 
+svu =  inf(1, 3) ; 
+
+% Static parameters             
+A  = [ 1.2 -.25 .90 .90] ;
+Al = [  -2   -1  -1  -1] + 1e-5 ;
+Au = [   2    1   1   1] - 1e-5 ;
+
+B  = [.001 .01 .001 .05 .001 .05] ;
+Bl = [   0   0    0   0    0   0] ;
+Bu = [  .1  .5   .1  .5   .1  .5] ;
+
+C  = repmat(zeros(1, 6) + .0, 1, 4) ; 
+Cl = -2*ones(1, size(C, 2)) ;
+Cu =  2*ones(1, size(C, 2)) ;
+
+lrmle  = [mean(Ys) log(std(Ys)) .2] ;
+lrmlel = -inf(1, 3) ;
+lrmleu =  inf(1, 3) ;
+
+smt = [.2    0   .5] ; 
+eta = [.2 1e-3 .34] ;
+
+newpar = [A  B  C  sv  smt(1) eta(1)] ;
+lbnd   = [Al Bl Cl svl smt(2) eta(2)] ;
+ubnd   = [Au Bu Cu svu smt(3) eta(3)] ;
+
+%% Model specification
+if mdl == 1 % No X
+
+    if c2
+    
+        newpar = [A  B  sv  smt(1) eta(1)] ;  
+        lbnd   = [Al Bl svl smt(2) eta(2)] ;
+        ubnd   = [Au Bu svu smt(3) eta(3)] ;
+
+        npar = size(newpar, 2) ;
+
+        prs  = @(parms) priors(parms) ;
+        
+        nam = 'no_X' ;
+        
+    else
+        
+        newpar = [A   B(2 : 2 : end) sv  smt(1) eta(1)] ;  
+        lbnd   = [Al Bl(2 : 2 : end) svl smt(2) eta(2)] ;
+        ubnd   = [Au Bu(2 : 2 : end) svu smt(3) eta(3)] ;
+
+        npar = size(newpar, 2) ;
+
+        prs  = @(parms) priors(parms, 0, 1) ;
+        
+        nam = 'no_X_c1' ;
+        
+    end
+    
+    X = [] ;
+    
+elseif mdl == 2 % NFCI t,t-1
+    
+    X = [x1(2 : end, 1) x1(1 : end - 1, 1)] ;
+    
+    if c2
+    
+        newpar = [A  B   C(1 : 6) sv  smt(1) eta(1)] ;
+        lbnd   = [Al Bl Cl(1 : 6) svl smt(2) eta(2)] ;
+        ubnd   = [Au Bu Cu(1 : 6) svu smt(3) eta(3)] ;
+
+        npar = size(newpar, 2) ;
+
+        prs  = @(parms) priors(parms) ;
+ 
+        nam = 'NFCI' ;
+        
+    else
+        
+        newpar = [A   B(2 : 2 : end)  C(1 : 6) lrmle  smt(1) eta(1)] ;
+        lbnd   = [Al Bl(2 : 2 : end) Cl(1 : 6) lrmlel smt(2) eta(2)] ;
+        ubnd   = [Au Bu(2 : 2 : end) Cu(1 : 6) lrmleu smt(3) eta(3)] ;
+
+        npar = size(newpar, 2) ;
+
+        prs  = @(parms) priors(parms, 0, 1) ;
+        
+         nam = 'NFCI_c1' ;
+        
+    end
+        
+elseif mdl == 3 % Leverage, Risk, Credit t,t-1
+    
+    X = [x1(2 : end, 2) x1(1 : end - 1, 2) x1(2 : end, 3) x1(1 : end - 1, 3) ...
+         x1(2 : end, 4) x1(1 : end - 1, 4) x1(2 : end, 5) x1(1 : end - 1, 5)] ;
+
+    if c2 
+
+        npar = size(newpar, 2) ;
+
+        prs  = @(parms) priors(parms) ;
+    
+        nam = '4DFI' ;
+        
+    else
+        
+        newpar = [A   B(2 : 2 : end) C  lrmle  smt(1) eta(1)] ;
+        lbnd   = [Al Bl(2 : 2 : end) Cl lrmlel smt(2) eta(2)] ;
+        ubnd   = [Au Bu(2 : 2 : end) Cu lrmleu smt(3) eta(3)] ;
+
+        npar = size(newpar, 2) ;
+
+        prs  = @(parms) priors(parms, 0, 1) ;
+        
+        nam = '4DFI_c1' ;
+        
+    end
+        
+elseif mdl == 4 % Leverage, Risk, Credit t,t-1, y t-1
+
+    X = [x1(2 : end, 2) x1(1 : end - 1, 2) x1(2 : end, 3) x1(1 : end - 1, 3) ...
+         x1(2 : end, 4) x1(1 : end - 1, 4) x1(2 : end, 5) x1(1 : end - 1, 5) ...
+         zscore(Y(2 : end)) zscore(Y(1 : end - 1))] ;
+
+     
+    if c2 
+
+        newpar = [A  B  C   C(1 : 6) sv  smt(1) eta(1)] ;
+        lbnd   = [Al Bl Cl Cl(1 : 6) svl smt(2) eta(2)] ;
+        ubnd   = [Au Bu Cu Cu(1 : 6) svu smt(3) eta(3)] ;
+
+        npar = size(newpar, 2) ;
+
+        prs = @(parms) priors(parms, 1) ;
+    
+        nam = '4DFIY' ;
+        
+    else
+        
+        newpar = [A   B(2 : 2 : end) C   C(1 : 6) lrmle  smt(1) eta(1)] ;
+        lbnd   = [Al Bl(2 : 2 : end) Cl Cl(1 : 6) lrmlel smt(2) eta(2)] ;
+        ubnd   = [Au Bu(2 : 2 : end) Cu Cu(1 : 6) lrmleu smt(3) eta(3)] ;
+
+        npar = size(newpar, 2) ;
+
+        prs = @(parms) priors(parms, 1, 1) ;
+    
+        nam = '4DFIY_c1' ;
+        
+    end
+    
+    
+elseif mdl == 5
+    
+    X = [zscore(Y(2 : end)) zscore(Y(1 : end - 1))] ;
+    
+    if c2
+    
+        newpar = [A  B   C(1 : 6) sv  smt(1)   .2] ;
+        lbnd   = [Al Bl Cl(1 : 6) svl smt(2) 1e-3] ;
+        ubnd   = [Au Bu Cu(1 : 6) svu smt(3)  .34] ;
+
+        npar = size(newpar, 2) ;
+
+        prs  = @(parms) priors(parms, 1) ;
+ 
+        nam = 'Yonly' ;
+        
+    else
+        
+        newpar = [A   B(2 : 2 : end)  C(1 : 6) lrmle  smt(1) eta(1)] ;
+        lbnd   = [Al Bl(2 : 2 : end) Cl(1 : 6) lrmlel smt(2) eta(2)] ;
+        ubnd   = [Au Bu(2 : 2 : end) Cu(1 : 6) lrmleu smt(3) eta(3)] ;
+
+        npar = size(newpar, 2) ;
+
+        prs  = @(parms) priors(parms, 1, 1) ;
+        
+        nam = 'Yonly_c1' ;
+        
+    end
+    
+end
+
+%% MCMC algorithm setup
+Y = Ys ;
+T = max(size(t)) ;
+
+ll_old = -10e5 ; 
+
+% Number of draws
+mcmcsize = 20e3 ;            % Size of simulation
+burn     = .6*mcmcsize + 1 ; % Burn-in draws
+thin     = 2 ;               % Thnning step
+
+%  Adaptive scheme
+H    = 2000 ; % Update frequency of draws' covariance matrix
+U    = 1500 ; % Update lookback of draws' covariance matrix
+step = 100 ;  % Update frequency of heuristic scale parameter
+
+% Adaptive step
+cvm   = eye(npar, H) ;    % Initial covariance matrix
+sigMH = 2.38/sqrt(npar) ; % Initial sigma MH
+
+% Forecasting setting
+fdraws = 1000 ;                  % Size of forecast support
+ci     = [50 5 25 32 68 75 95] ; % Percentiles of interest
+
+sp  = 50 ;
+lng = 1e3 ;
+dt  = 2*sp/lng ;
+
+supp = linspace(-sp, sp, lng) ;
+
+% Initialize output objects
+accept = false(mcmcsize, 1) ;
+
+[bet_mcmc, cy1_mcmc, sig1_mcmc, sig2_mcmc, rho1_mcmc, rho2_mcmc, exm_mcmc, exa_mcmc, exl_mcmc, vrl_mcmc, vrf_mcmc, Exf_mcmc, Exl_mcmc, Vxf_mcmc, Vxl_mcmc, vdf_mcmc, gnu_mcmc, hnu_mcmc] = deal(nan) ;
+[bet_fci,  cy1_fci,  sig1_fci,  sig2_fci,  rho1_fci,  rho2_fci,  exm_fci,  exa_fci, exl_fci, ef1, ef2, ef3, el1, el2, el3, vrl_fci, vrf_fci, Exf_fci, Exl_fci, Vxf_fci, Vxl_fci]  = deal(nan(T, mcmcsize)) ;
+llr_fci  = nan(T - 11, mcmcsize) ;
+llr_mcmc = nan(T - 11, 1) ; 
+
+[vdf_fci, gnu_fci, hnu_fci] = deal(nan(mcmcsize, 1)) ;
+Stp                         = zeros(mcmcsize, npar) ;
+
+[lln_fci,  ltp_fci,  cost_fci, dev_fci]  = deal(nan(mcmcsize, 1)) ;
+[lln_mcmc, ltp_mcmc, cost_mcmc, dev_mcmc] = deal(nan) ;
+
+[m1, m2, m3, m4, m5, m6, v1, v2, v3, v4, v5, v6, s1, s2, s3, s4, s5, s6] = deal(nan(T, mcmcsize)) ;
+
+%% Initial MLE
+% Specify filter
+fltr = @(in1) sktFilter(in1, Y, X, 0, fdraws, c2) ;
+
+tic2 = tic ;
+
+obj    = @(theta)  fltr(theta) - prs(theta)/T ; 
+[optest, ~, flg] = fminsearchbnd(obj, newpar', lbnd', ubnd', opt) ;
+
+TOC2 = toc(tic2) ;
+disp(['MLE time: ' num2str(TOC2/60) ' minutes --- Flag: ' num2str(flg)])
+
+Stp_mcmc = optest ;
+
+%% MCMC algorithm
+EPS = randn(H, mcmcsize) ;
+
+tic3 = tic ;
+for j = 2 : mcmcsize 
+
+    candpar = Stp_mcmc + sigMH*cvm*EPS(:, j) ;
+
+    reject = max(candpar - ubnd') > 0 || min(candpar - lbnd') < 0 || ~isstationaryAR2(candpar(1), candpar(2)) ;
+
+    m1(:, j) = m1(:, j - 1) ;
+    m2(:, j) = m2(:, j - 1) ;
+    v1(:, j) = v1(:, j - 1) ;
+    v2(:, j) = v2(:, j - 1) ;
+    s1(:, j) = s1(:, j - 1) ;
+    s2(:, j) = s2(:, j - 1) ;
+    
+    ef1(:, j) = ef1(:, j - 1) ;
+    ef2(:, j) = ef2(:, j - 1) ;
+    ef3(:, j) = ef3(:, j - 1) ;
+    el1(:, j) = el1(:, j - 1) ;
+    el2(:, j) = el2(:, j - 1) ;
+    el3(:, j) = el3(:, j - 1) ;
+        
+    if ~reject
+
+        [lln, resmcmc, checkres] = fltr(candpar) ;
+
+        ll = - lln*T + prs(candpar) ;    
+
+        % stochastically accept/reject candidate values
+        v0 = min(exp(ll - ll_old), 1) ; % determine accept probability
+
+        accept(j) = rand <= v0 ;    
+
+        if accept(j) && ~isinf(ll)        
+
+            % Update paramteters
+            Stp_mcmc  = deal(candpar) ; 
+            ll_old    = ll ;
+            ltp_mcmc  = ll ;
+            lln_mcmc  = lln ;
+            
+            % Unpack filter results
+            bet_mcmc  =        resmcmc(1 : end - 1, 1) ;
+            cy1_mcmc  =        resmcmc(1 : end - 1, 2) ;
+            sig1_mcmc =        resmcmc(1 : end - 1, 4) ;
+            sig2_mcmc =        resmcmc(1 : end - 1, 5) ;
+            rho1_mcmc =        resmcmc(1 : end - 1, 6) ;
+            rho2_mcmc =        resmcmc(1 : end - 1, 7) ;
+             exm_mcmc = checkres.mu   (1 : end - 1) ;
+             exa_mcmc = checkres.Expvf(1 : end - 1) ;
+             exl_mcmc = checkres.Expvl(1 : end - 1) ;
+             vrf_mcmc = checkres.Varnf(1 : end - 1) ;
+             vrl_mcmc = checkres.Varnl(1 : end - 1) ;
+             Exf_mcmc = checkres.Exf  (1 : end - 1) ;
+             Exl_mcmc = checkres.Exl  (1 : end - 1) ;
+             Vxf_mcmc = checkres.Vxf  (1 : end - 1) ;
+             Vxl_mcmc = checkres.Vxl  (1 : end - 1) ;
+             gnu_mcmc = checkres.gnu ;
+             hnu_mcmc = checkres.hnu ;
+             llr_mcmc = checkres.llrec ;
+            cost_mcmc = checkres.cost ;
+             
+             vdf_mcmc = checkres.Vdof ;
+             dev_mcmc = 2*T*lln ;
+             
+            % Densities for numerical moments 
+            f1 = epsilonskewt(supp, exm_mcmc, sqrt(sig1_mcmc.*sig2_mcmc), rho1_mcmc+rho2_mcmc, candpar(end)) ;
+            f2 = epsilonskewt(supp, bet_mcmc, sqrt(sig1_mcmc), rho1_mcmc, candpar(end)) ;
+                 
+            if any(mdl == [3 4])
+             
+                S = checkres.scs ; 
+
+                [m1(1 : 2, j), m2(1 : 2, j), m3(1 : 2, j), m4(1 : 2, j), m5(1 : 2, j), m6(1 : 2, j)] = deal(      resmcmc(1 : 2, 2) /5) ; % 50/50 initialization
+                [v1(1 : 2, j), v2(1 : 2, j), v3(1 : 2, j), v4(1 : 2, j), v5(1 : 2, j), v6(1 : 2, j)] = deal(  log(resmcmc(1 : 2, 5))/10) ; % 50/50 initialization
+                [s1(1 : 2, j), s2(1 : 2, j), s3(1 : 2, j), s4(1 : 2, j), s5(1 : 2, j), s6(1 : 2, j)] = deal(atanh(resmcmc(1 : 2, 8))/5) ; % 50/50 initialization
+
+                phi_m = candpar(1 : 2) ;
+                phi_v = candpar(3) ;
+                phi_s = candpar(4) ;
+
+                kappa_m = candpar(6) ;
+                kappa_v = candpar(8) ;
+                kappa_s = candpar(10) ;
+
+                betta_m = candpar(11 : 3 : end - 2) ;
+                betta_v = candpar(12 : 3 : end - 2) ;
+                betta_s = candpar(13 : 3 : end - 2) ;
+                
+            end
+                
+            % Compute point-in-time decomposition
+            for ii = 1 : T
+
+                if ii > 2 && any(mdl == [3 4])
+                
+                    m1(ii, j) = phi_m(1)*m1(ii - 1, j) + phi_m(2)*m1(ii - 2, j) + kappa_m*S(ii - 1, 1) ;
+                    m2(ii, j) = phi_m(1)*m2(ii - 1, j) + phi_m(2)*m2(ii - 2, j) + betta_m([1 2])'*X(ii - 1, [1 2])' ;
+                    m3(ii, j) = phi_m(1)*m3(ii - 1, j) + phi_m(2)*m3(ii - 2, j) + betta_m([3 4])'*X(ii - 1, [3 4])' ;
+                    m4(ii, j) = phi_m(1)*m4(ii - 1, j) + phi_m(2)*m4(ii - 2, j) + betta_m([5 6])'*X(ii - 1, [5 6])' ;
+                    m5(ii, j) = phi_m(1)*m5(ii - 1, j) + phi_m(2)*m5(ii - 2, j) + betta_m([7 8])'*X(ii - 1, [7 8])' ;
+
+                    v1(ii, j) = phi_v*v1(ii - 1, j) + kappa_v*S(ii - 1, 2) ;
+                    v2(ii, j) = phi_v*v2(ii - 1, j) + betta_v([1 2])'*X(ii - 1, [1 2])' ;
+                    v3(ii, j) = phi_v*v3(ii - 1, j) + betta_v([3 4])'*X(ii - 1, [3 4])' ;
+                    v4(ii, j) = phi_v*v4(ii - 1, j) + betta_v([5 6])'*X(ii - 1, [5 6])' ;
+                    v5(ii, j) = phi_v*v5(ii - 1, j) + betta_v([7 8])'*X(ii - 1, [7 8])' ;
+
+                    s1(ii, j) = phi_s*s1(ii - 1, j) + kappa_s*S(ii - 1, 3) ;
+                    s2(ii, j) = phi_s*s2(ii - 1, j) + betta_s([1 2])'*X(ii - 1, [1 2])' ;
+                    s3(ii, j) = phi_s*s3(ii - 1, j) + betta_s([3 4])'*X(ii - 1, [3 4])' ;
+                    s4(ii, j) = phi_s*s4(ii - 1, j) + betta_s([5 6])'*X(ii - 1, [5 6])' ;
+                    s5(ii, j) = phi_s*s5(ii - 1, j) + betta_s([7 8])'*X(ii - 1, [7 8])' ;
+
+                    if mdl == 4
+                        
+                        m6(ii, j) = phi_m(1)*m6(ii - 1, j) + phi_m(2)*m5(ii - 2, j) + betta_m([7 8])'*X(ii - 1, [9 10])' ;
+                        v6(ii, j) = phi_v*v6(ii - 1, j) + betta_v([7 8])'*X(ii - 1, [9 10])' ;
+                        s6(ii, j) = phi_s*s6(ii - 1, j) + betta_s([7 8])'*X(ii - 1, [9 10])' ;
+
+                    end
+                        
+                end
+                    
+                ef1(ii, j) = sum(supp.*f1(ii, :))*dt ;
+                ef2(ii, j) = sum(((supp - ef1(ii, j)).^2).*f1(ii, :))*dt ;
+                ef3(ii, j) = sum((((supp - ef1(ii, j))./sqrt(ef2(ii, j))).^3).*f1(ii, :))*dt ;
+                el1(ii, j) = sum(supp.*f2(ii, :))*dt ;
+                el2(ii, j) = sum(((supp - el1(ii, j)).^2).*f2(ii, :))*dt ;
+                el3(ii, j) = sum(((supp - el1(ii, j))./sqrt(el2(ii, j))).^3.*f2(ii, :))*dt ;
+                 
+            end
+                              
+        end
+
+    end
+ 
+    % Store current chain
+    Stp(j, :) = Stp_mcmc ; 
+
+     bet_fci(:, j) =  bet_mcmc ;
+     cy1_fci(:, j) =  cy1_mcmc ;
+    sig1_fci(:, j) = sig1_mcmc ;
+    sig2_fci(:, j) = sig2_mcmc ;
+    rho1_fci(:, j) = rho1_mcmc ;
+    rho2_fci(:, j) = rho2_mcmc ;
+     exm_fci(:, j) =  exm_mcmc ;
+     exa_fci(:, j) =  exa_mcmc ;
+     exl_fci(:, j) =  exl_mcmc ;
+     vrf_fci(:, j) =  vrf_mcmc ;
+     vrl_fci(:, j) =  vrl_mcmc ;
+     Exf_fci(:, j) =  Exf_mcmc ;
+     Exl_fci(:, j) =  Exl_mcmc ;
+     Vxf_fci(:, j) =  Vxf_mcmc ;
+     Vxl_fci(:, j) =  Vxl_mcmc ;
+     
+     gnu_fci(j) = gnu_mcmc ;
+     hnu_fci(j) = hnu_mcmc ;
+     vdf_fci(j) = vdf_mcmc ;
+    
+    ltp_fci(j)    = ltp_mcmc ; 
+    lln_fci(j)    = lln_mcmc ; 
+    llr_fci(:, j) = llr_mcmc ;
+   cost_fci(j)    = cost_mcmc ;
+    dev_fci(j)    =  dev_mcmc ;
+   
+    % Check local acceptance and adjust heuristics
+    if mod(j, step) == 0 
+        
+        AC = mean(accept(max(1, j - step) : j)) ;
+       
+        sigMH = sigMH*((tanh(AC./.25) + .24).*(AC < .25) + 1*(AC >= .25 & AC <= .35) + (.88 + AC.^2).*(AC > .35)) ;
+
+    end
+    
+    % Adaptive step (See Haario, Saksman and Tamminen, 1999) 
+    if mod(j, U) == 0 && j >= H
+
+        vedd  = Stp(max(1, j - H + 1) : j, :) ;
+        K     = vedd - mean(vedd) ;
+        cvm   = K'/sqrt(H - 1) + 1e-10*eye(H, npar)' ;
+        sigMH = 2.38/sqrt(npar) ;  
+
+    end
+
+end
+
+TOC3 = toc(tic3) ;
+disp(['MCMC time: ' num2str(TOC3/60) ' minutes'])
+disp(['Achieved acceptance rate: ' num2str(mean(accept(burn : end)))])
+
+%% Colletct results
+
+% Apply burn-in and thinning
+STP = Stp(burn : thin : end, :) ;
+
+TVP.beta  =  bet_fci(:, burn : thin : end) ;
+TVP.cycle =  cy1_fci(:, burn : thin : end) ;
+TVP.sig21 = sig1_fci(:, burn : thin : end) ;
+TVP.sig22 = sig2_fci(:, burn : thin : end) ;
+TVP.rho1  = rho1_fci(:, burn : thin : end) ;
+TVP.rho2  = rho2_fci(:, burn : thin : end) ;
+TVP.exm   =  exm_fci(:, burn : thin : end) ;
+TVP.exa   =  exa_fci(:, burn : thin : end) ;
+TVP.exl   =  exl_fci(:, burn : thin : end) ;
+TVP.ef1   =      ef1(:, burn : thin : end) ;
+TVP.ef2   =      ef2(:, burn : thin : end) ;
+TVP.ef3   =      ef3(:, burn : thin : end) ;
+TVP.el1   =      el1(:, burn : thin : end) ;
+TVP.el2   =      el2(:, burn : thin : end) ;
+TVP.el3   =      el3(:, burn : thin : end) ;
+TVP.vrf   =  vrf_fci(:, burn : thin : end) ;
+TVP.vrl   =  vrl_fci(:, burn : thin : end) ;
+TVP.Exf   =  Exf_fci(:, burn : thin : end) ;
+TVP.Exl   =  Exl_fci(:, burn : thin : end) ;
+TVP.Vxf   =  Vxf_fci(:, burn : thin : end) ;
+TVP.Vxl   =  Vxl_fci(:, burn : thin : end) ;
+TVP.vdf   =  vdf_fci(   burn : thin : end) ;
+TVP.gnu   =  gnu_fci(   burn : thin : end) ;
+TVP.hnu   =  hnu_fci(   burn : thin : end) ;
+lln       =  lln_fci(   burn : thin : end) ;
+dev       =  dev_fci(   burn : thin : end) ;
+
+% Store percentiles
+stp = prctile(STP, ci) ;
+
+betta  = prctile(TVP.beta,  ci, 2) ;
+ cycl  = prctile(TVP.cycle, ci, 2) ;
+ sig21 = prctile(TVP.sig21, ci, 2) ;
+ sig22 = prctile(TVP.sig22, ci, 2) ;
+  sig2 = prctile(TVP.sig21.*TVP.sig22, ci, 2) ; 
+  rho1 = prctile(TVP.rho1,  ci, 2) ; 
+  rho2 = prctile(TVP.rho2,  ci, 2) ; 
+   rho = prctile(TVP.rho1 + TVP.rho2,  ci, 2) ;
+   exm = prctile(TVP.exm,  ci, 2) ;
+   exa = prctile(TVP.exa,  ci, 2) ;
+   exl = prctile(TVP.exl,  ci, 2) ;
+   ef1 = prctile(TVP.ef1,  ci, 2) ;
+   ef2 = prctile(TVP.ef2,  ci, 2) ;
+   ef3 = prctile(TVP.ef3,  ci, 2) ;
+   el1 = prctile(TVP.el1,  ci, 2) ;
+   el2 = prctile(TVP.el2,  ci, 2) ;
+   el3 = prctile(TVP.el3,  ci, 2) ;
+   vrf = prctile(TVP.vrf,  ci, 2) ;
+   vrl = prctile(TVP.vrl,  ci, 2) ;
+   Exf = prctile(TVP.Exf,  ci, 2) ;
+   Exl = prctile(TVP.Exl,  ci, 2) ;
+   Vxf = prctile(TVP.Vxf,  ci, 2) ;
+   Vxl = prctile(TVP.Vxl,  ci, 2) ;
+   vdf = prctile(TVP.vdf,  ci, 1) ;
+   gnu = prctile(TVP.gnu,  ci, 1) ;
+   hnu = prctile(TVP.hnu,  ci, 1) ;
+
+%% Goodness of fit
+% Divergence Information Criterion
+dbar = mean(dev) ;
+tbar = 2*T*fltr(mean(STP)') ;
+dic = 2*dbar - tbar ;
+pD  =   dbar - tbar ;
+
+% log-Marginal likelihood
+lML = log(harmmean(exp(-T*lln))) ;
+
+%% Plots %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+red = [.635 .078 .184] ;
+blk = [0 0 0] ;
+blu = [0 .447 .741] ;
+
+% Figure 2.a
+figure(1)
+plotbands(t, ef1(:, [3 6]), blu, .1)
+plotbands(t, el1(:, [3 6]), red, .1)
+hold on
+plot(t, ef1(:, 1), 'color', 'b')
+plot(t, el1(:, 1), '--', 'color', red)
+ylim([-4 8])
+grid
+xlim([t(4) t(end)])
+recessionplot
+legend('Full', 'Long-run')
+print('-dpdf', figpath + "Figure2a.pdf") ;
+
+% Figure 2.b
+figure(2)
+plotbands(t, ef2(:, [3 6]).^.5, blu, .1)
+plotbands(t, el2(:, [3 6]).^.5, red, .1)
+hold on
+plot(t, ef2(:, 1).^.5, 'color', 'b')
+plot(t, el2(:, 1).^.5, '--', 'color', red)
+ylim([0 10])
+grid
+xlim([t(4) t(end)])
+recessionplot
+legend('Full', 'Long-run')
+print('-dpdf', figpath + "Figure2b.pdf") ;
+
+% Figure 3.a
+figure(3)
+plotbands(t, ef3(:, [3 6]), blu, .1)
+plotbands(t, el3(:, [3 6]), red, .1)
+hold on
+plot(t, ef3(:, 1), 'color', 'b')
+plot(t, el3(:, 1), '--', 'color', red)
+grid
+xlim([t(4) t(end)])
+recessionplot
+legend('Full', 'Long-run')
+print('-dpdf', figpath + "Figure3a.pdf") ;
+
+% Figure 3.b
+goodvol = sqrt((1 - rho)/2.*ef2) ;
+ badvol = sqrt((1 + rho)/2.*ef2) ;
+
+figure(4)
+plotbands(t, goodvol(:, [3 6]), blu, .1)
+plotbands(t, badvol(:, [3 6]), red, .1)
+hold on
+plot(t, goodvol(:, 1), 'color', 'b')
+plot(t, badvol(:, 1), 'color', red)
+grid
+xlim([t(4) t(end)])
+recessionplot
+legend('$$Vol^+$$', '$$Vol^-$$')
+print('-dpdf', figpath + "Figure3b.pdf") ;
+
+% Figure 4.a
+figure(5)
+hold on
+stackedArea(t, [-exa(:, 1) exm(:, 1)], [0 0 1; 1 0 0], .3)
+plot(t,  exm(:, 1) - exa(:, 1), '-*k', 'LineWidth', .5, 'MarkerSize', 3)
+plot(t,  exm(:, 1), '.-r', 'LineWidth', .2, 'MarkerSize', 5)
+plot(t, -exa(:, 1), '-vb', 'LineWidth', .1, 'MarkerSize', 3)        
+ylim([-8 8])
+xlim([t(4) t(end)])
+recessionplot
+box on
+[~, hobj] = legend('', '', '', '', '$$E_{t-1}[y_t]$$', '$$\mu_t$$', '\textsl{g}($$\eta)\sigma_t\varrho_t$$', 'location', 'northeast', 'FontSize', 20) ;
+hl = findobj(hobj, 'type', 'line') ;
+set(hl, 'LineWidth', 1, 'markersize', 9) ;
+print('-dpdf', figpath + "Figure4a.pdf") ;
+
+% Figure 4.b
+VX = sig2(:, 1).*(vdf(1) + vrf(:, 1)) ;
+
+vhom = sig2(:, 1).*(vrf(:, 1)) ;
+vsst = sig2(:, 1).*(vdf(1)) ;
+
+figure(6)
+hold on
+stackedArea(t, [vhom vsst], [0 0 1; 1 0 0], .3)
+plot(t, VX(:, 1), '-*k', 'LineWidth', .5, 'MarkerSize', 3)
+plot(t, vsst(:, 1), '.-r', 'LineWidth', .2, 'MarkerSize', 5)
+plot(t, vhom(:, 1), '-vb', 'LineWidth', .1, 'MarkerSize', 3)        
+xlim([t(4) t(end)])
+recessionplot
+box on
+[~, hobj] = legend('', '', '', '', '$$Var_{t-1}(y_t)$$', '$$\frac{\sigma_t^2}{1-2\eta}$$', '$$\sigma_t^2\textsl{h}(\eta)\varrho_t^2$$', 'location', 'northeast') ;
+hl = findobj(hobj, 'type', 'line') ;
+set(hl, 'LineWidth', 1, 'markersize', 9) ;
+print('-dpdf', figpath + "Figure4b.pdf") ;
+
+% Figure 5.a
+exmlong = betta ;
+exlong  = exmlong - exl ;
+
+figure(7) 
+hold on
+stackedArea(t, [-exl(:, 1) exmlong(:, 1)], [0 0 1; 1 0 0], .3)
+plot(t,  exlong(:, 1), '-*k', 'LineWidth', .5, 'MarkerSize', 3)
+plot(t,  exmlong(:, 1), '.-r', 'LineWidth', .2, 'MarkerSize', 5)
+plot(t, -exl(:, 1), '-vb', 'LineWidth', .1, 'MarkerSize', 3)        
+ylim([-2 6])
+xlim([t(4) t(end)])
+recessionplot
+box on
+[~, hobj] = legend('', '', '', '', '$$\lim_{h\to\infty} E[y_{t+h}]$$', '$$\bar\mu_t$$', '\textsl{g}($$\eta)\bar\sigma_t\bar\varrho_t$$', 'location', 'northeast') ;
+hl = findobj(hobj, 'type', 'line') ;
+set(hl, 'LineWidth', 1, 'markersize', 9) ;
+print('-dpdf', figpath + "Figure5a.pdf") ;
+
+% Figure 5.b
+goodlong = (1 - rho1)/2.*el2 ;
+ badlong = (1 + rho1)/2.*el2 ;
+
+figure(8) 
+hold on
+stackedArea(t, [goodlong(:, 1) badlong(:, 1)], [0 0 1; 1 0 0], .3)
+plot(t, el2(:, 1), '-*k', 'LineWidth', .5, 'MarkerSize', 3)
+ylim([0 17])
+xlim([t(4) t(end)])
+recessionplot
+legend({'', '', '$$\overline{Var}^+_t$$', '$$\overline{Var}^-_t$$', '$$\lim_{h\to\infty} Var[y_{t+h}]$$', },...
+        'FontSize', 20, 'location', 'northeast', 'orientation', 'horizontal', 'Interpreter', 'latex')
+print('-dpdf', figpath + "Figure5b.pdf") ;
+
+% Figure 7.a
+clr(1, :) = [.929 .694 .125] ; % Score
+clr(2, :) = [.466 .674 .188] ; % Leverage
+clr(3, :) = [.494 .184 .556] ; % Nf-leverage
+clr(4, :) = [.635 .078 .184] ; % Risk
+clr(5, :) = [.301 .745 .933] ; % Credit
+clr(6, :) = [.466 .745 .125] ; % y(t-1)
+
+v1med = median(v1, 2, 'omitnan') ;
+v2med = median(v2, 2, 'omitnan') ;
+v3med = median(v3, 2, 'omitnan') ;
+v4med = median(v4, 2, 'omitnan') ;
+v5med = median(v5, 2, 'omitnan') ;
+v6med = median(v6, 2, 'omitnan') ;
+
+figure(9) 
+hold on
+stackedArea(t, [v1med v2med v3med v4med v5med v6med], clr, 1, 'off')
+plot(t, sum([v1med v2med v3med v4med v5med v6med], 2, 'omitnan'), '-*k', 'LineWidth', 1, 'MarkerSize', 5)
+plot(t, v1med*nan, 'linewidth', 3, 'color', clr(1, :))
+plot(t, v2med*nan, 'linewidth', 3, 'color', clr(2, :))
+plot(t, v3med*nan, 'linewidth', 3, 'color', clr(3, :))
+plot(t, v4med*nan, 'linewidth', 3, 'color', clr(4, :))
+plot(t, v5med*nan, 'linewidth', 3, 'color', clr(5, :))
+plot(t, v6med*nan, 'linewidth', 3, 'color', clr(6, :))
+xlim([t(4) t(end)])
+ylim([-.5 1.2])
+recessionplot
+legend('$$\tilde\gamma_t$$', 'score', 'leverage', 'NFleverage', 'risk', 'credit', 'numcolumns', 2)
+print('-dpdf', figpath + "Figure7a.pdf") ;
+
+% Figure 7.b
+s1med = median(s1, 2, 'omitnan') ;
+s2med = median(s2, 2, 'omitnan') ;
+s3med = median(s3, 2, 'omitnan') ;
+s4med = median(s4, 2, 'omitnan') ;
+s5med = median(s5, 2, 'omitnan') ;
+s6med = median(s6, 2, 'omitnan') ;
+
+figure(10) 
+hold on
+stackedArea(t, -[s1med s2med s3med s4med s5med s6med], clr, 1, 'off')
+plot(t, -sum([s1med s2med s3med s4med s5med s6med], 2, 'omitnan'), '-*k', 'LineWidth', 1, 'MarkerSize', 5)
+plot(t, s1med*nan, 'linewidth', 3, 'color', clr(1, :))
+plot(t, s2med*nan, 'linewidth', 3, 'color', clr(2, :))
+plot(t, s3med*nan, 'linewidth', 3, 'color', clr(3, :))
+plot(t, s4med*nan, 'linewidth', 3, 'color', clr(4, :))
+plot(t, s5med*nan, 'linewidth', 3, 'color', clr(5, :))
+plot(t, s6med*nan, 'linewidth', 3, 'color', clr(6, :))
+xlim([t(4) t(end)])
+ylim([-1.5 1])
+recessionplot
+legend('$$\tilde\delta_t$$')
+print('-dpdf', figpath + "Figure7b.pdf") ;
+
+%% Save results
+save(savepath + "output_mdl" + mdl,...
+    'stp', 'betta', 'cycl', 'sig21', 'sig22', 'sig2', 'rho1', 'rho2', 'rho',...
+    'exm', 'exa', 'exl', 'm1', 'm2', 'm3', 'm4', 'm5', 'm6', 'v1', 'v2', 'v3', 'v4', 'v5', 'v6',...
+    's1', 's2', 's3', 's4', 's5', 's6', 't', 'X', 'Y', 'ef1', 'ef2', 'ef3', 'el1', 'el2', 'el3', ...
+    'vrf', 'vrl', 'Exf', 'Exl', 'Vxf', 'Vxl', 'vdf', 'gnu', 'hnu', 'dic', 'pD', 'TVP', 'STP', 'lML') ;% 
+
+TOC0 = toc(tic0) ;
+disp(['Total time: ' num2str(TOC0/60) ' minutes'])
+
+
+
+
+
+
