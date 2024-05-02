@@ -5,7 +5,7 @@
 %            Journal of Business & Economic Statistics (2023).
 %
 % Matlab version: 2023a.
-% Use of code for research purposes is permitted as long as proper 
+% Use of this code for research purposes is permitted as long as proper 
 % reference to source is given.
 %
 % Andrea De Polis, andrea.depolis@gmail.com / a.de-polis@warwick.ac.uk
