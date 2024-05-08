@@ -13,4 +13,4 @@ The main code, `main_sec4.m`, set up the specified model, runs the MCMC algorith
 The function `sktFilter.m` implements the filtering and forecasting steps.
 Additional functions are avaialble in the auxFunctions subfolder.
 
-The authors take no responibility for any misuse of the codes.
+The authors take no responsibility for any misuse of the codes.
