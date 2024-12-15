@@ -5,8 +5,8 @@ Use of these codes for research purposes is permittes as long as proper referenc
 The codes were writtend in MATLAB2023a; minor incompatibilities could arisie with versions prior to MATLAB2020a. 
 
 Please, cite as:\
-_Delle Monache, D., De Polis, A., & Petrella, I. (2023). Modeling and forecasting macroeconomic downside risk_.\
-_Journal of Business & Economic Statistics, 1-27_.
+Delle Monache, D., De Polis, A., & Petrella, I. (2024). _Modeling and forecasting macroeconomic downside risk._\
+_Journal of Business & Economic Statistics_, 42(3), 1010-1025.
 
 # Content #
 The main code, `main_sec4.m`, set up the specified model, runs the MCMC algorithm and produces an output file and the plots.
